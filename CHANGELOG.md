@@ -5,6 +5,12 @@ All notable public changes to Entropy are tracked here.
 Entropy uses public release versions for GitHub releases and internal build versions
 for development history. The first public beta is `v0.1.0-beta.1`.
 
+## Unreleased
+
+### Main Features
+
+- Added Key Heatmap: opt-in local press statistics per keyboard and layer, shown as a thermal map with key-to-key routes on each half of a split keyboard and an activity calendar; only counters are stored, never typed text
+
 ## v0.4.0 - Public Beta
 
 ### Main Features

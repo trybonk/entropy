@@ -5,6 +5,8 @@ use crate::key_stats::{
 use layout_indicator::LayerTrackerPress;
 
 const KEY_STATS_AUTOSAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// How often the matrix poll rate is written to the diagnostics log.
+const KEY_STATS_RATE_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Why presses are currently not counted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +33,12 @@ pub(crate) struct KeyStatsRuntime {
     matrix_halves_source: Option<(String, usize, usize)>,
     last_save: Option<std::time::Instant>,
     was_collecting: bool,
+    /// Matrix samples and presses since `rate_window_start`, for the
+    /// diagnostics log: a too slow poll (e.g. in the tray) misses presses.
+    rate_window_start: Option<std::time::Instant>,
+    rate_polls: u32,
+    rate_presses: u32,
+    rate_hidden_polls: u32,
 }
 
 fn key_stats_root_dir() -> std::path::PathBuf {
@@ -210,11 +218,40 @@ impl EntropyApp {
     }
 
     /// Counts the presses of one matrix poll.
+    fn log_key_stats_poll_rate(&mut self, presses: usize, now: std::time::Instant) {
+        if !self.app_settings.key_heatmap.enabled {
+            self.key_stats.rate_window_start = None;
+            return;
+        }
+        let hidden = self.main_window_hidden_to_tray();
+        let stats = &mut self.key_stats;
+        let start = *stats.rate_window_start.get_or_insert(now);
+        stats.rate_polls += 1;
+        stats.rate_presses += presses as u32;
+        stats.rate_hidden_polls += u32::from(hidden);
+        let elapsed = now.duration_since(start);
+        if elapsed < KEY_STATS_RATE_LOG_INTERVAL {
+            return;
+        }
+        log::debug!(
+            "key heatmap: {:.1} matrix polls/s, {} presses in {:.0}s, {}% of polls hidden to tray",
+            stats.rate_polls as f64 / elapsed.as_secs_f64(),
+            stats.rate_presses,
+            elapsed.as_secs_f64(),
+            stats.rate_hidden_polls * 100 / stats.rate_polls.max(1),
+        );
+        stats.rate_window_start = Some(now);
+        stats.rate_polls = 0;
+        stats.rate_presses = 0;
+        stats.rate_hidden_polls = 0;
+    }
+
     pub(super) fn record_key_stats(
         &mut self,
         presses: &[LayerTrackerPress],
         now: std::time::Instant,
     ) {
+        self.log_key_stats_poll_rate(presses.len(), now);
         let collecting = self.key_stats_pause_reason().is_none();
         if !collecting {
             // No route may span a pause: its presses were never seen.

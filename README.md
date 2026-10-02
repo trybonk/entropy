@@ -40,6 +40,8 @@ and firmware settings from one coherent interface.
 - Custom names for layers, combos, macros, tap dance entries, and other device objects
 - Live Features as a built-in qmk-hid-host replacement for firmware host data
 - Matrix Tester and Layout Indicator for testing and daily layer visibility
+- Key Heatmap with per-layer press statistics, finger routes, and an activity calendar
+  for tuning a layout (opt-in, counters only)
 - Layer hover preview, encoder controls, custom labels, and multilingual legends
 - Advanced pages for Auto Shift, Mouse Keys, Tap-Hold, One Shot, Grave Escape,
   Magic, Layer LEDs, touchpad settings, and modules
