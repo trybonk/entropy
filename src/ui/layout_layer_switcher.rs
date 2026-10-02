@@ -32,7 +32,7 @@ fn main_menu_reserves_battery_status_space(info: Option<&DeviceAboutInfo>) -> bo
         .unwrap_or(false)
 }
 
-fn layer_after_wheel(selected: usize, layer_count: usize, wheel_delta: f32) -> usize {
+pub(super) fn layer_after_wheel(selected: usize, layer_count: usize, wheel_delta: f32) -> usize {
     if layer_count == 0 {
         return 0;
     }

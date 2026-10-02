@@ -23,7 +23,7 @@ fn sticky_base_layer_target(kc: u16) -> Option<usize> {
     vial_layer_op_target(kc).and_then(|(op, target)| matches!(op, 0 | 2 | 7).then_some(target))
 }
 
-fn layout_effective_keycode(layout: &KeyboardLayout, layer: usize, key_idx: usize) -> u16 {
+pub(super) fn layout_effective_keycode(layout: &KeyboardLayout, layer: usize, key_idx: usize) -> u16 {
     let kc = layout.get_keycode(layer, key_idx);
     if kc != 0x0001 {
         return kc;

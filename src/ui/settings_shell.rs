@@ -66,6 +66,10 @@ impl EntropyApp {
                 self.draw_typing_trainer_page(ui, layout, ctx, content_rect);
                 false
             }
+            SettingsTab::KeyHeatmap => {
+                self.draw_key_heatmap_page(ui, layout, content_rect, dark);
+                false
+            }
             SettingsTab::Macros => {
                 self.draw_macro_settings_page(ui, content_rect);
                 false
@@ -155,6 +159,7 @@ impl EntropyApp {
 
         if self.settings_tab != SettingsTab::MatrixTester
             && self.settings_tab != SettingsTab::TypingTrainer
+            && self.settings_tab != SettingsTab::KeyHeatmap
         {
             self.draw_settings_navigation_hint(
                 ui,
@@ -331,6 +336,7 @@ impl EntropyApp {
             MainMenuTab::Settings | MainMenuTab::Advanced
         ) && self.settings_tab != SettingsTab::MatrixTester
             && self.settings_tab != SettingsTab::TypingTrainer
+            && self.settings_tab != SettingsTab::KeyHeatmap
             && !self.secondary_click_handled
             && self.application_layout_rename_target_id.is_none()
             && self.editing_layer.is_none()

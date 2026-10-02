@@ -1572,6 +1572,27 @@ layer_held_return_suffix = " при удержании, вернуть при о
 tt_hold_suffix = ", hold активирует при удержании"
 lm_held_suffix = " при удержании во время нажатия клавиши"
 
+[key_heatmap]
+title = "Тепловая карта"
+description = "Как часто вы нажимаете каждую клавишу и куда дальше идут пальцы"
+collect = "Собирать статистику"
+collect_tooltip = "Считаются только нажатия и переходы между клавишами, без текста. Хранится локально."
+status_collecting = "Идёт сбор"
+status_disabled = "Выключено"
+status_no_keyboard = "Подключите клавиатуру"
+status_unsupported = "Доступно только для клавиатур Vial"
+status_locked = "Пауза: разблокируйте клавиатуру"
+status_matrix_tester = "Пауза, пока открыт Matrix Tester"
+status_typing_trainer = "Пауза, пока открыт тренажёр печати"
+this_week = "Эта неделя"
+last_week = "Прошлая неделя"
+all_time = "Всё время"
+scale_log = "Лог."
+scale_linear = "Линейная"
+all_layers = "Все слои"
+empty = "За этот период нажатий пока нет"
+presses_tooltip = "{count} нажатий · {share}%"
+
 [typing_trainer]
 title = "Тренажёр печати"
 description = "Локальный тест скорости печати"

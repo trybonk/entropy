@@ -27,7 +27,7 @@ impl EntropyApp {
             let key_override_supported = !self.key_override_entries.is_empty();
             let auto_shift_supported =
                 self.auto_shift_timeout.is_some() || self.supported_qmk_settings.contains(&4);
-            let advanced_item_count = 2
+            let advanced_item_count = 3
                 + macro_supported as usize
                 + tap_dance_supported as usize
                 + combo_supported as usize
@@ -36,6 +36,7 @@ impl EntropyApp {
             let mut advanced_menu_labels =
                 vec![crate::i18n::tr_catalog(lang, "text_expander.title")];
             advanced_menu_labels.push(crate::i18n::tr_catalog(lang, "typing_trainer.title"));
+            advanced_menu_labels.push(crate::i18n::tr_catalog(lang, "key_heatmap.title"));
             if macro_supported {
                 advanced_menu_labels.push(crate::i18n::tr_catalog(lang, "macro_editor.title"));
             }
@@ -80,6 +81,7 @@ impl EntropyApp {
                 let (
                     text_expander_hovered,
                     typing_trainer_hovered,
+                    key_heatmap_hovered,
                     macro_hovered,
                     tap_dance_hovered,
                     combo_hovered,
@@ -108,6 +110,14 @@ impl EntropyApp {
                                     true,
                                     self.main_menu_tab == MainMenuTab::Advanced
                                         && self.settings_tab == SettingsTab::TypingTrainer,
+                                );
+                                let key_heatmap_resp = top_dropdown_item(
+                                    ui,
+                                    item_width,
+                                    crate::i18n::tr_catalog(lang, "key_heatmap.title"),
+                                    true,
+                                    self.main_menu_tab == MainMenuTab::Advanced
+                                        && self.settings_tab == SettingsTab::KeyHeatmap,
                                 );
                                 let macro_resp = macro_supported.then(|| {
                                     top_dropdown_item(
@@ -167,6 +177,10 @@ impl EntropyApp {
                                     self.close_top_dropdowns(ui.ctx());
                                     self.open_typing_trainer_page();
                                 }
+                                if key_heatmap_resp.clicked() {
+                                    self.close_top_dropdowns(ui.ctx());
+                                    self.open_key_heatmap_page();
+                                }
                                 if macro_resp
                                     .as_ref()
                                     .is_some_and(|response| response.clicked())
@@ -210,6 +224,7 @@ impl EntropyApp {
                                 (
                                     text_expander_resp.hovered(),
                                     typing_trainer_resp.hovered(),
+                                    key_heatmap_resp.hovered(),
                                     macro_resp.as_ref().map(|r| r.hovered()).unwrap_or(false),
                                     tap_dance_resp
                                         .as_ref()
@@ -226,6 +241,7 @@ impl EntropyApp {
                                         .unwrap_or(false),
                                     text_expander_resp.clicked()
                                         || typing_trainer_resp.clicked()
+                                        || key_heatmap_resp.clicked()
                                         || macro_resp
                                             .as_ref()
                                             .map(|r| r.clicked())
@@ -258,6 +274,7 @@ impl EntropyApp {
                             && (advanced_tab_hovered
                                 || text_expander_hovered
                                 || typing_trainer_hovered
+                                || key_heatmap_hovered
                                 || macro_hovered
                                 || tap_dance_hovered
                                 || combo_hovered
