@@ -1399,12 +1399,7 @@ impl EntropyApp {
                     })
                     .collect();
                 self.keycode_picker.layer_names = self.layer_names.clone();
-                self.sticky_layout_prev_pressed.clear();
-                self.sticky_layout_pressed_key_layers.clear();
-                self.sticky_layout_toggled_layers = vec![false; r.layout.layers.len().max(1)];
-                self.sticky_layout_active_combos = vec![false; r.combo_entries.len()];
-                self.sticky_layout_tap_dance_states.clear();
-                self.sticky_layout_base_layer = 0;
+                self.layer_tracker.reset();
                 self.sticky_layout_active_layer = 0;
 
                 self.layout = Some(r.layout);

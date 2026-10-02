@@ -353,74 +353,118 @@ fn sticky_layout_active_layer(
     active_layer
 }
 
-impl EntropyApp {
-    pub(super) fn sync_sticky_layout_layer_state(&mut self, layout: &KeyboardLayout) -> usize {
-        let layer_count = layout.layers.len().max(1);
-        let pressed = self.matrix_tester_pressed.clone();
-        let now = std::time::Instant::now();
-        let combo_entries = &self.combo_entries;
-        let tap_dance_entries = &self.keycode_picker.tap_dance_entries;
+/// A key that went down in this matrix update, with the layer the firmware
+/// resolves it on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LayerTrackerPress {
+    pub(crate) matrix_idx: usize,
+    pub(crate) layer: usize,
+    pub(crate) keycode: u16,
+}
 
-        if self.sticky_layout_prev_pressed.len() != pressed.len() {
-            self.sticky_layout_prev_pressed = vec![false; pressed.len()];
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LayerTrackerUpdate {
+    pub(crate) active_layer: usize,
+    pub(crate) new_presses: Vec<LayerTrackerPress>,
+}
+
+/// Host-side replica of the firmware layer state, driven by switch matrix
+/// polls. Shared by the Layout Indicator and the key heatmap statistics.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LayerTracker {
+    prev_pressed: Vec<bool>,
+    pressed_key_layers: Vec<Option<usize>>,
+    toggled_layers: Vec<bool>,
+    active_combos: Vec<bool>,
+    tap_dance_states: Vec<StickyLayoutTapDanceState>,
+    base_layer: usize,
+}
+
+impl LayerTracker {
+    /// Forgets all pressed, toggled and pending state.
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Drops combo activity, e.g. after the combo entries were reloaded.
+    pub(crate) fn reset_combos(&mut self) {
+        self.active_combos.clear();
+    }
+
+    /// Drops pending tap dance state, e.g. after the entries were reloaded.
+    pub(crate) fn reset_tap_dances(&mut self) {
+        self.tap_dance_states.clear();
+    }
+
+    /// Layer each currently pressed key was pressed on, indexed by matrix position.
+    pub(crate) fn pressed_key_layers(&self) -> &[Option<usize>] {
+        &self.pressed_key_layers
+    }
+
+    pub(crate) fn update(
+        &mut self,
+        layout: &KeyboardLayout,
+        combo_entries: &[ComboEntry],
+        tap_dance_entries: &[crate::keycode_picker::TapDanceEntry],
+        pressed: &[bool],
+        now: std::time::Instant,
+    ) -> LayerTrackerUpdate {
+        let layer_count = layout.layers.len().max(1);
+
+        if self.prev_pressed.len() != pressed.len() {
+            self.prev_pressed = vec![false; pressed.len()];
         }
-        if self.sticky_layout_pressed_key_layers.len() != pressed.len() {
-            self.sticky_layout_pressed_key_layers = vec![None; pressed.len()];
+        if self.pressed_key_layers.len() != pressed.len() {
+            self.pressed_key_layers = vec![None; pressed.len()];
         }
-        if self.sticky_layout_toggled_layers.len() != layer_count {
-            self.sticky_layout_toggled_layers = vec![false; layer_count];
+        if self.toggled_layers.len() != layer_count {
+            self.toggled_layers = vec![false; layer_count];
         }
-        if self.sticky_layout_active_combos.len() != combo_entries.len() {
-            self.sticky_layout_active_combos = vec![false; combo_entries.len()];
+        if self.active_combos.len() != combo_entries.len() {
+            self.active_combos = vec![false; combo_entries.len()];
         }
-        if self.sticky_layout_tap_dance_states.len() != pressed.len() {
-            self.sticky_layout_tap_dance_states =
-                vec![StickyLayoutTapDanceState::Idle; pressed.len()];
+        if self.tap_dance_states.len() != pressed.len() {
+            self.tap_dance_states = vec![StickyLayoutTapDanceState::Idle; pressed.len()];
         }
-        self.sticky_layout_base_layer = self.sticky_layout_base_layer.min(layer_count - 1);
+        self.base_layer = self.base_layer.min(layer_count - 1);
 
         let previous_virtual_layer_keycodes = sticky_virtual_layer_keycodes(
-            &self.sticky_layout_active_combos,
+            &self.active_combos,
             combo_entries,
-            &self.sticky_layout_tap_dance_states,
+            &self.tap_dance_states,
             tap_dance_entries,
         );
         let layer_before = sticky_layout_active_layer(
             layout,
-            &self.sticky_layout_prev_pressed,
-            &self.sticky_layout_pressed_key_layers,
-            &self.sticky_layout_toggled_layers,
-            self.sticky_layout_base_layer,
+            &self.prev_pressed,
+            &self.pressed_key_layers,
+            &self.toggled_layers,
+            self.base_layer,
             &previous_virtual_layer_keycodes,
         );
         let mut generated_layer_actions = Vec::new();
+        let mut new_presses = Vec::new();
 
         for (key_idx, key) in layout.keys.iter().enumerate() {
             let matrix_idx = key.row as usize * layout.cols + key.col as usize;
             let is_pressed = pressed.get(matrix_idx).copied().unwrap_or(false);
-            let was_pressed = self
-                .sticky_layout_prev_pressed
-                .get(matrix_idx)
-                .copied()
-                .unwrap_or(false);
+            let was_pressed = self.prev_pressed.get(matrix_idx).copied().unwrap_or(false);
             if is_pressed && !was_pressed {
-                if let Some(source_layer) =
-                    self.sticky_layout_pressed_key_layers.get_mut(matrix_idx)
-                {
+                if let Some(source_layer) = self.pressed_key_layers.get_mut(matrix_idx) {
                     *source_layer = Some(layer_before);
                 }
             }
 
             let pressed_keycode = is_pressed.then(|| {
                 let source_layer = self
-                    .sticky_layout_pressed_key_layers
+                    .pressed_key_layers
                     .get(matrix_idx)
                     .and_then(|layer| *layer)
                     .unwrap_or(layer_before);
                 layout_effective_keycode(layout, source_layer, key_idx)
             });
             let pressed_tap_dance_entry = pressed_keycode.and_then(sticky_tap_dance_index);
-            if let Some(state) = self.sticky_layout_tap_dance_states.get_mut(matrix_idx) {
+            if let Some(state) = self.tap_dance_states.get_mut(matrix_idx) {
                 generated_layer_actions.extend(sticky_update_tap_dance_state(
                     state,
                     is_pressed,
@@ -432,19 +476,29 @@ impl EntropyApp {
 
             if is_pressed && !was_pressed {
                 if let Some(keycode) = pressed_keycode {
+                    // Alternative layout-option variants share a matrix
+                    // position; report each physical press once.
+                    if !new_presses
+                        .iter()
+                        .any(|press: &LayerTrackerPress| press.matrix_idx == matrix_idx)
+                    {
+                        new_presses.push(LayerTrackerPress {
+                            matrix_idx,
+                            layer: layer_before,
+                            keycode,
+                        });
+                    }
                     sticky_apply_persistent_layer_action(
                         keycode,
                         layer_count,
-                        &mut self.sticky_layout_toggled_layers,
-                        &mut self.sticky_layout_base_layer,
+                        &mut self.toggled_layers,
+                        &mut self.base_layer,
                     );
                 }
             }
 
             if !is_pressed {
-                if let Some(source_layer) =
-                    self.sticky_layout_pressed_key_layers.get_mut(matrix_idx)
-                {
+                if let Some(source_layer) = self.pressed_key_layers.get_mut(matrix_idx) {
                     *source_layer = None;
                 }
             }
@@ -454,17 +508,13 @@ impl EntropyApp {
             sticky_apply_persistent_layer_action(
                 keycode,
                 layer_count,
-                &mut self.sticky_layout_toggled_layers,
-                &mut self.sticky_layout_base_layer,
+                &mut self.toggled_layers,
+                &mut self.base_layer,
             );
         }
 
-        let pressed_keycodes = sticky_pressed_keycodes(
-            layout,
-            &pressed,
-            &self.sticky_layout_pressed_key_layers,
-            layer_before,
-        );
+        let pressed_keycodes =
+            sticky_pressed_keycodes(layout, pressed, &self.pressed_key_layers, layer_before);
         let current_active_combos: Vec<bool> = combo_entries
             .iter()
             .enumerate()
@@ -473,45 +523,57 @@ impl EntropyApp {
                     combo,
                     &pressed_keycodes,
                     layer_before,
-                    self.sticky_layout_active_combos
-                        .get(idx)
-                        .copied()
-                        .unwrap_or(false),
+                    self.active_combos.get(idx).copied().unwrap_or(false),
                 )
             })
             .collect();
         for (idx, active) in current_active_combos.iter().copied().enumerate() {
-            let was_active = self
-                .sticky_layout_active_combos
-                .get(idx)
-                .copied()
-                .unwrap_or(false);
+            let was_active = self.active_combos.get(idx).copied().unwrap_or(false);
             if active && !was_active {
                 sticky_apply_persistent_layer_action(
                     combo_entries[idx].output.vial_keycode(),
                     layer_count,
-                    &mut self.sticky_layout_toggled_layers,
-                    &mut self.sticky_layout_base_layer,
+                    &mut self.toggled_layers,
+                    &mut self.base_layer,
                 );
             }
         }
-        self.sticky_layout_active_combos = current_active_combos;
+        self.active_combos = current_active_combos;
 
-        self.sticky_layout_prev_pressed = pressed;
+        self.prev_pressed = pressed.to_vec();
         let virtual_layer_keycodes = sticky_virtual_layer_keycodes(
-            &self.sticky_layout_active_combos,
+            &self.active_combos,
             combo_entries,
-            &self.sticky_layout_tap_dance_states,
+            &self.tap_dance_states,
             tap_dance_entries,
         );
-        sticky_layout_active_layer(
+        let active_layer = sticky_layout_active_layer(
             layout,
-            &self.matrix_tester_pressed,
-            &self.sticky_layout_pressed_key_layers,
-            &self.sticky_layout_toggled_layers,
-            self.sticky_layout_base_layer,
+            pressed,
+            &self.pressed_key_layers,
+            &self.toggled_layers,
+            self.base_layer,
             &virtual_layer_keycodes,
-        )
+        );
+
+        LayerTrackerUpdate {
+            active_layer,
+            new_presses,
+        }
+    }
+}
+
+impl EntropyApp {
+    pub(super) fn sync_sticky_layout_layer_state(&mut self, layout: &KeyboardLayout) -> usize {
+        self.layer_tracker
+            .update(
+                layout,
+                &self.combo_entries,
+                &self.keycode_picker.tap_dance_entries,
+                &self.matrix_tester_pressed,
+                std::time::Instant::now(),
+            )
+            .active_layer
     }
 }
 
@@ -572,6 +634,74 @@ mod tests {
             lighting_mode: None,
             firmware: FirmwareProtocol::Vial,
         }
+    }
+
+    fn press_layers(update: &LayerTrackerUpdate) -> Vec<(usize, usize)> {
+        update
+            .new_presses
+            .iter()
+            .map(|press| (press.matrix_idx, press.layer))
+            .collect()
+    }
+
+    #[test]
+    fn layer_tracker_follows_k03_style_tri_layer() {
+        // Keys: 0 = MO(1) / MO(3) on layer 2, 1 = MO(2) / MO(3) on layer 1, 2 = letter.
+        let layout = test_layout(vec![
+            vec![mo(1), mo(2), 0x0004],
+            vec![1, mo(3), 0x0005],
+            vec![mo(3), 1, 0x0006],
+            vec![1, 1, 0x0007],
+        ]);
+        let mut tracker = LayerTracker::default();
+        let now = std::time::Instant::now();
+        let mut poll = |pressed: [bool; 3]| tracker.update(&layout, &[], &[], &pressed, now);
+
+        let lower = poll([true, false, false]);
+        assert_eq!(lower.active_layer, 1);
+        assert_eq!(press_layers(&lower), vec![(0, 0)]);
+
+        let adjust = poll([true, true, false]);
+        assert_eq!(adjust.active_layer, 3);
+        assert_eq!(press_layers(&adjust), vec![(1, 1)]);
+
+        let letter = poll([true, true, true]);
+        assert_eq!(press_layers(&letter), vec![(2, 3)]);
+        assert_eq!(letter.new_presses[0].keycode, 0x0007);
+
+        let released = poll([false, false, false]);
+        assert_eq!(released.active_layer, 0);
+        assert!(released.new_presses.is_empty());
+
+        let base_letter = poll([false, false, true]);
+        assert_eq!(press_layers(&base_letter), vec![(2, 0)]);
+        assert_eq!(base_letter.new_presses[0].keycode, 0x0004);
+    }
+
+    #[test]
+    fn layer_tracker_attributes_a_press_in_the_same_poll_as_mo_to_the_old_layer() {
+        // Known limitation: the poll cannot order presses that land in one sample.
+        let layout = test_layout(vec![vec![mo(1), 0x0004], vec![1, 0x0005]]);
+        let mut tracker = LayerTracker::default();
+        let update = tracker.update(&layout, &[], &[], &[true, true], std::time::Instant::now());
+        assert_eq!(update.active_layer, 1);
+        assert_eq!(press_layers(&update), vec![(0, 0), (1, 0)]);
+    }
+
+    #[test]
+    fn layer_tracker_keeps_toggled_layers_until_reset() {
+        let layout = test_layout(vec![vec![tg(1), 0x0004], vec![tg(1), 0x0005]]);
+        let mut tracker = LayerTracker::default();
+        let now = std::time::Instant::now();
+        tracker.update(&layout, &[], &[], &[true, false], now);
+        tracker.update(&layout, &[], &[], &[false, false], now);
+        let letter = tracker.update(&layout, &[], &[], &[false, true], now);
+        assert_eq!(press_layers(&letter), vec![(1, 1)]);
+
+        tracker.reset();
+        tracker.update(&layout, &[], &[], &[false, false], now);
+        let letter = tracker.update(&layout, &[], &[], &[false, true], now);
+        assert_eq!(press_layers(&letter), vec![(1, 0)]);
     }
 
     #[test]

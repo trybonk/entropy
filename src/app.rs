@@ -125,6 +125,7 @@ mod key_override_settings_ui;
 mod layer_led_settings_ui;
 #[path = "ui/layout_indicator.rs"]
 mod layout_indicator;
+use layout_indicator::LayerTracker;
 #[path = "ui/layout_indicator_preview.rs"]
 mod layout_indicator_preview;
 #[path = "ui/layout_indicator_window.rs"]

@@ -862,7 +862,7 @@ impl EntropyApp {
                 self.selected_combo = self
                     .selected_combo
                     .min(self.combo_visible_count.saturating_sub(1));
-                self.sticky_layout_active_combos = vec![false; self.combo_entries.len()];
+                self.layer_tracker.reset_combos();
                 self.deferred_device_load
                     .set_section_status(DeferredLoadSection::Combos, DeferredLoadStatus::Loaded);
             }
@@ -870,7 +870,7 @@ impl EntropyApp {
                 self.keycode_picker.tap_dance_entries = entries.clone();
                 self.keycode_picker.tap_dance_synced_entries = entries;
                 self.keycode_picker.tap_dance_dirty = false;
-                self.sticky_layout_tap_dance_states.clear();
+                self.layer_tracker.reset_tap_dances();
                 self.deferred_device_load
                     .set_section_status(DeferredLoadSection::TapDance, DeferredLoadStatus::Loaded);
             }

@@ -20,12 +20,7 @@ impl EntropyApp {
     pub(super) fn reset_matrix_tester_state(&mut self) {
         self.matrix_tester_pressed.clear();
         self.matrix_tester_ever_pressed.clear();
-        self.sticky_layout_prev_pressed.clear();
-        self.sticky_layout_pressed_key_layers.clear();
-        self.sticky_layout_toggled_layers.clear();
-        self.sticky_layout_active_combos.clear();
-        self.sticky_layout_tap_dance_states.clear();
-        self.sticky_layout_base_layer = 0;
+        self.layer_tracker.reset();
         self.sticky_layout_active_layer = 0;
         self.matrix_tester_last_poll = std::time::Instant::now() - MATRIX_TESTER_POLL_INTERVAL;
         self.matrix_tester_last_lock_check =

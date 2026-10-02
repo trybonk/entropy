@@ -635,7 +635,7 @@ impl EntropyApp {
         let encoder_visibility = self.encoder_visibility.clone();
         let module_settings = self.module_settings.clone();
         let matrix_pressed = self.matrix_tester_pressed.clone();
-        let pressed_key_layers = self.sticky_layout_pressed_key_layers.clone();
+        let pressed_key_layers = self.layer_tracker.pressed_key_layers().to_vec();
         let controls = StickyLayoutViewportControls {
             dark_mode: self.app_settings.sticky_layout_dark_mode,
             opacity: clamp_sticky_layout_opacity(self.app_settings.sticky_layout_opacity),
