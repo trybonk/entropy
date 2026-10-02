@@ -445,8 +445,10 @@ fn sticky_layout_should_bring_window_forward(
 
 impl EntropyApp {
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn poll_sticky_layout_background(&mut self, ctx: &egui::Context) {
-        if !self.app_settings.sticky_layout_window || self.is_vial_locked() {
+    pub(super) fn poll_matrix_background(&mut self, ctx: &egui::Context) {
+        let wanted =
+            self.app_settings.sticky_layout_window || self.app_settings.key_heatmap.enabled;
+        if !wanted || self.is_vial_locked() {
             return;
         }
 
@@ -617,11 +619,13 @@ impl EntropyApp {
             .as_deref()
             .map(|device_title| format!("{indicator_title} — {device_title}"))
             .unwrap_or_else(|| indicator_title.clone());
-        let sticky_layer = layout
-            .as_ref()
-            .map(|layout| self.sync_sticky_layout_layer_state(layout))
-            .unwrap_or(0);
-        self.sticky_layout_active_layer = sticky_layer;
+        // The layer tracker advances with every matrix poll (see
+        // finish_matrix_tester_poll); the window only reads its result.
+        let sticky_layer = if layout.is_some() {
+            self.sticky_layout_active_layer
+        } else {
+            0
+        };
         let layer_names = if application_layout_active {
             self.application_layout_active_layer_names()
         } else {

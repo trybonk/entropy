@@ -140,7 +140,7 @@ impl EntropyApp {
         }
     }
 
-    fn main_window_hidden_to_tray(&self) -> bool {
+    pub(super) fn main_window_hidden_to_tray(&self) -> bool {
         #[cfg(target_os = "windows")]
         {
             self.windows_window_hidden_to_tray
@@ -164,7 +164,7 @@ impl EntropyApp {
         selected_device_is_bluetooth: bool,
     ) {
         self.poll_vial_hid_task(ctx);
-        self.poll_sticky_layout_background(ctx);
+        self.poll_matrix_background(ctx);
         self.poll_settings_write(ctx);
         self.flush_due_qmk_setting_writes();
         if should_poll_device_scan(main_window_hidden_to_tray, self.hid_write_lifecycle_busy()) {
@@ -1266,6 +1266,7 @@ impl eframe::App for EntropyApp {
         self.flush_pending_tap_hold_numeric_writes();
         self.flush_pending_text_expander_settings();
         self.flush_typing_trainer_symbol_stats();
+        self.flush_key_stats();
         self.app_settings.dark_mode = self.dark_mode;
         save_app_settings(&self.app_settings);
     }
@@ -1313,9 +1314,10 @@ impl eframe::App for EntropyApp {
             let update_check_pending =
                 matches!(self.update_check, UpdateCheckState::Checking { .. })
                     || crate::app::firmware_update_check_pending(&self.firmware_update_check);
-            let layout_indicator_interval = self
-                .app_settings
-                .sticky_layout_window
+            // The Layout Indicator and key heatmap collection both follow the
+            // matrix poll, also while the main window is hidden to the tray.
+            let layout_indicator_interval = (self.app_settings.sticky_layout_window
+                || self.app_settings.key_heatmap.enabled)
                 .then(|| self.matrix_tester_poll_interval());
             ctx.request_repaint_after(native_repaint_interval(
                 main_window_hidden_to_tray,

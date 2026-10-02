@@ -117,6 +117,8 @@ pub(crate) struct AppSettings {
     pub(crate) typing_trainer: TypingTrainerSettings,
     #[serde(default)]
     pub(crate) typing_trainer_history: Vec<TypingTrainerRunRecord>,
+    #[serde(default)]
+    pub(crate) key_heatmap: crate::key_stats::KeyHeatmapSettings,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -239,6 +241,7 @@ impl Default for AppSettings {
             layout_sync_enabled: default_layout_sync_enabled(),
             typing_trainer: TypingTrainerSettings::default(),
             typing_trainer_history: Vec::new(),
+            key_heatmap: crate::key_stats::KeyHeatmapSettings::default(),
         }
     }
 }
@@ -5372,6 +5375,7 @@ pub struct EntropyApp {
     pub(crate) matrix_tester_pressed: Vec<bool>,
     pub(crate) matrix_tester_ever_pressed: Vec<bool>,
     pub(crate) layer_tracker: LayerTracker,
+    pub(crate) key_stats: KeyStatsRuntime,
     pub(crate) sticky_layout_active_layer: usize,
     pub(crate) sticky_layout_last_size: Option<Vec2>,
     pub(crate) sticky_layout_resize_opacity_hold_frames: u8,

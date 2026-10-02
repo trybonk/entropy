@@ -234,6 +234,7 @@ impl EntropyApp {
         self.pending_layout_indicator_open_after_unlock = false;
         self.keycode_picker.open = false;
         self.current_device_name.clear();
+        self.flush_key_stats();
         self.current_keyboard_id = None;
         self.current_encoder_visibility_id.clear();
         self.device_about_info = None;

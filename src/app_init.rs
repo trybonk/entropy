@@ -275,6 +275,7 @@ impl EntropyApp {
             matrix_tester_pressed: Vec::new(),
             matrix_tester_ever_pressed: Vec::new(),
             layer_tracker: LayerTracker::default(),
+            key_stats: KeyStatsRuntime::default(),
             sticky_layout_active_layer: 0,
             sticky_layout_last_size: None,
             sticky_layout_resize_opacity_hold_frames: 0,

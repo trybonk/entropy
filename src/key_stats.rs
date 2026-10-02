@@ -4,10 +4,10 @@
 //! Only aggregates are kept — no event log and no typed text — so the stored
 //! data cannot be replayed into what was typed.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 
 use crate::keyboard::PhysicalKey;
 
@@ -17,6 +17,53 @@ pub(crate) const DEFAULT_TRANSITION_MAX_GAP: Duration = Duration::from_millis(10
 /// the halves of a split keyboard.
 const SPLIT_GAP_MIN_UNITS: f32 = 1.5;
 const DATE_FORMAT: &str = "%Y-%m-%d";
+
+fn default_transition_max_gap_ms() -> u32 {
+    DEFAULT_TRANSITION_MAX_GAP.as_millis() as u32
+}
+
+fn default_top_transitions() -> u8 {
+    5
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// User settings of the key heatmap, stored in `AppSettings`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct KeyHeatmapSettings {
+    /// Collection is opt-in: nothing is counted until the user enables it.
+    #[serde(default)]
+    pub(crate) enabled: bool,
+    #[serde(default = "default_transition_max_gap_ms")]
+    pub(crate) transition_max_gap_ms: u32,
+    /// How many transitions the route web shows; 0 shows all.
+    #[serde(default = "default_top_transitions")]
+    pub(crate) top_transitions: u8,
+    #[serde(default = "default_true")]
+    pub(crate) log_scale: bool,
+    #[serde(default)]
+    pub(crate) show_held_keys_in_routes: bool,
+}
+
+impl Default for KeyHeatmapSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            transition_max_gap_ms: default_transition_max_gap_ms(),
+            top_transitions: default_top_transitions(),
+            log_scale: true,
+            show_held_keys_in_routes: false,
+        }
+    }
+}
+
+impl KeyHeatmapSettings {
+    pub(crate) fn transition_max_gap(&self) -> Duration {
+        Duration::from_millis(self.transition_max_gap_ms as u64)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct KeyPos {
@@ -126,17 +173,48 @@ impl From<DayStats> for DayStatsFile {
     }
 }
 
+/// One stats file per calendar month, so autosave only rewrites the current
+/// month instead of the whole history.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct KeyStatsFile {
     version: u8,
     days: BTreeMap<String, DayStats>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct StatsMonth {
+    pub(crate) year: i32,
+    pub(crate) month: u32,
+}
+
+impl StatsMonth {
+    pub(crate) fn of(date: NaiveDate) -> Self {
+        Self {
+            year: date.year(),
+            month: date.month(),
+        }
+    }
+
+    /// File name without extension: `YYYY-MM`.
+    pub(crate) fn file_stem(self) -> String {
+        format!("{:04}-{:02}", self.year, self.month)
+    }
+
+    pub(crate) fn parse_file_stem(stem: &str) -> Option<Self> {
+        let (year, month) = stem.split_once('-')?;
+        let month = Self {
+            year: year.parse().ok()?,
+            month: month.parse().ok()?,
+        };
+        (stem.len() == 7 && (1..=12).contains(&month.month)).then_some(month)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KeyStatsStore {
     days: BTreeMap<NaiveDate, DayStats>,
-    /// Set by every mutation; cleared by the caller after a successful save.
-    pub(crate) dirty: bool,
+    /// Months changed since they were last saved.
+    dirty_months: BTreeSet<StatsMonth>,
 }
 
 fn layer_matches(layer_filter: Option<u8>, layer: u8) -> bool {
@@ -144,30 +222,49 @@ fn layer_matches(layer_filter: Option<u8>, layer: u8) -> bool {
 }
 
 impl KeyStatsStore {
-    pub(crate) fn from_json(data: &str) -> Result<Self, String> {
+    /// Merges one month file into the store without marking it unsaved.
+    pub(crate) fn load_month(&mut self, data: &str) -> Result<(), String> {
         let file: KeyStatsFile = serde_json::from_str(data).map_err(|error| error.to_string())?;
         if file.version != KEY_STATS_VERSION {
             return Err(format!("unsupported key stats version: {}", file.version));
         }
-        let mut days = BTreeMap::new();
         for (date, stats) in file.days {
             let date = NaiveDate::parse_from_str(&date, DATE_FORMAT)
                 .map_err(|error| format!("invalid key stats date {date:?}: {error}"))?;
-            days.insert(date, stats);
+            self.days.insert(date, stats);
         }
-        Ok(Self { days, dirty: false })
+        Ok(())
     }
 
-    pub(crate) fn to_json(&self) -> Result<String, String> {
+    /// Serialized file for `month`, or `None` when the month holds no data and
+    /// its file should be removed.
+    pub(crate) fn month_json(&self, month: StatsMonth) -> Option<Result<String, String>> {
+        let days: BTreeMap<String, DayStats> = self
+            .days
+            .iter()
+            .filter(|(date, _)| StatsMonth::of(**date) == month)
+            .map(|(date, stats)| (date.format(DATE_FORMAT).to_string(), stats.clone()))
+            .collect();
+        if days.is_empty() {
+            return None;
+        }
         let file = KeyStatsFile {
             version: KEY_STATS_VERSION,
-            days: self
-                .days
-                .iter()
-                .map(|(date, stats)| (date.format(DATE_FORMAT).to_string(), stats.clone()))
-                .collect(),
+            days,
         };
-        serde_json::to_string(&file).map_err(|error| error.to_string())
+        Some(serde_json::to_string(&file).map_err(|error| error.to_string()))
+    }
+
+    pub(crate) fn dirty_months(&self) -> Vec<StatsMonth> {
+        self.dirty_months.iter().copied().collect()
+    }
+
+    pub(crate) fn mark_saved(&mut self, month: StatsMonth) {
+        self.dirty_months.remove(&month);
+    }
+
+    pub(crate) fn has_unsaved_changes(&self) -> bool {
+        !self.dirty_months.is_empty()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -182,7 +279,7 @@ impl KeyStatsStore {
             .presses
             .entry(pos)
             .or_default() += 1;
-        self.dirty = true;
+        self.dirty_months.insert(StatsMonth::of(date));
     }
 
     pub(crate) fn record_transition(&mut self, date: NaiveDate, from: KeyPos, to: KeyPos) {
@@ -193,7 +290,7 @@ impl KeyStatsStore {
             .transitions
             .entry((from, to))
             .or_default() += 1;
-        self.dirty = true;
+        self.dirty_months.insert(StatsMonth::of(date));
     }
 
     fn days_in(&self, range: Option<DateRange>) -> impl Iterator<Item = &DayStats> {
@@ -270,13 +367,15 @@ impl KeyStatsStore {
 
     /// Removes the days in `range`, or everything when `range` is `None`.
     pub(crate) fn clear(&mut self, range: Option<DateRange>) {
-        let before = self.days.len();
-        match range {
-            Some(range) => self.days.retain(|date, _| !range.contains(*date)),
-            None => self.days.clear(),
-        }
-        if self.days.len() != before {
-            self.dirty = true;
+        let removed: Vec<NaiveDate> = self
+            .days
+            .keys()
+            .copied()
+            .filter(|date| range.is_none_or(|range| range.contains(*date)))
+            .collect();
+        for date in removed {
+            self.days.remove(&date);
+            self.dirty_months.insert(StatsMonth::of(date));
         }
     }
 }
@@ -613,22 +712,44 @@ mod tests {
     }
 
     #[test]
-    fn json_round_trip_preserves_counters() {
+    fn month_files_round_trip_and_track_unsaved_months() {
+        let october = StatsMonth::of(date(1));
+        let november = StatsMonth::of(NaiveDate::from_ymd_opt(2026, 11, 2).unwrap());
         let mut store = KeyStatsStore::default();
         store.record_press(date(1), KeyPos::new(2, 17));
         store.record_press(date(1), KeyPos::new(2, 17));
         store.record_transition(date(5), KeyPos::new(0, 1), KeyPos::new(1, 2));
+        store.record_press(
+            NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
+            KeyPos::new(0, 3),
+        );
+        assert_eq!(store.dirty_months(), vec![october, november]);
 
-        let json = store.to_json().unwrap();
-        let mut loaded = KeyStatsStore::from_json(&json).unwrap();
-        assert!(!loaded.dirty);
-        loaded.dirty = true;
+        let mut loaded = KeyStatsStore::default();
+        for month in store.dirty_months() {
+            let json = store.month_json(month).unwrap().unwrap();
+            loaded.load_month(&json).unwrap();
+            store.mark_saved(month);
+        }
+        assert!(!store.has_unsaved_changes());
+        assert!(!loaded.has_unsaved_changes());
         assert_eq!(loaded, store);
     }
 
     #[test]
+    fn month_file_names_round_trip() {
+        let month = StatsMonth::of(date(1));
+        assert_eq!(month.file_stem(), "2026-10");
+        assert_eq!(StatsMonth::parse_file_stem("2026-10"), Some(month));
+        for invalid in ["2026-13", "2026-1", "26-10", "settings", "2026-10-01"] {
+            assert_eq!(StatsMonth::parse_file_stem(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
     fn unsupported_version_is_rejected() {
-        assert!(KeyStatsStore::from_json(r#"{"version":99,"days":{}}"#).is_err());
+        let mut store = KeyStatsStore::default();
+        assert!(store.load_month(r#"{"version":99,"days":{}}"#).is_err());
     }
 
     #[test]
@@ -637,14 +758,15 @@ mod tests {
         for day in 1..=5 {
             store.record_press(date(day), KeyPos::new(0, 1));
         }
-        store.dirty = false;
+        store.mark_saved(StatsMonth::of(date(1)));
         store.clear(Some(DateRange::new(date(2), date(4))));
-        assert!(store.dirty);
+        assert!(store.has_unsaved_changes());
         assert_eq!(
             store.daily_totals(None).keys().copied().collect::<Vec<_>>(),
             vec![date(1), date(5)]
         );
         store.clear(None);
         assert!(store.is_empty());
+        assert!(store.month_json(StatsMonth::of(date(1))).is_none());
     }
 }

@@ -563,20 +563,6 @@ impl LayerTracker {
     }
 }
 
-impl EntropyApp {
-    pub(super) fn sync_sticky_layout_layer_state(&mut self, layout: &KeyboardLayout) -> usize {
-        self.layer_tracker
-            .update(
-                layout,
-                &self.combo_entries,
-                &self.keycode_picker.tap_dance_entries,
-                &self.matrix_tester_pressed,
-                std::time::Instant::now(),
-            )
-            .active_layer
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #[test]

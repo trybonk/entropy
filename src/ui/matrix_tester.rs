@@ -112,6 +112,33 @@ impl EntropyApp {
             }
         }
         self.matrix_tester_pressed = pressed;
+        self.update_layer_tracker_from_matrix();
+    }
+
+    /// Advances the shared layer tracker once per matrix sample and feeds the
+    /// new presses to the key heatmap statistics.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn update_layer_tracker_from_matrix(&mut self) {
+        let Some(layout) = self.layout.as_ref() else {
+            return;
+        };
+        // Match the keymap the Layout Indicator shows.
+        let layout = if self.application_layouts_supported() {
+            std::borrow::Cow::Owned(self.application_layout_active_rendered_copy(layout))
+        } else {
+            std::borrow::Cow::Borrowed(layout)
+        };
+        let now = std::time::Instant::now();
+        let update = self.layer_tracker.update(
+            &layout,
+            &self.combo_entries,
+            &self.keycode_picker.tap_dance_entries,
+            &self.matrix_tester_pressed,
+            now,
+        );
+        drop(layout);
+        self.sticky_layout_active_layer = update.active_layer;
+        self.record_key_stats(&update.new_presses, now);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

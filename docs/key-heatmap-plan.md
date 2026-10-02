@@ -90,23 +90,27 @@
 получает слой, активный до него; `MO` и клавиша в одном опросе → базовый слой
 (фиксируем известное ограничение).
 
-## Этап 3. Подключение сбора
+## Этап 3. Подключение сбора — ✅ готово
 
-1. `AppSettings`: `key_stats_enabled` (false), `key_stats_pause_ms` (1000),
-   `key_stats_top_n` (5), `key_stats_log_scale` (true),
-   `key_stats_show_held_in_routes` (false).
+1. `AppSettings::key_heatmap` (`KeyHeatmapSettings`): `enabled` (false),
+   `transition_max_gap_ms` (1000), `top_transitions` (5), `log_scale` (true),
+   `show_held_keys_in_routes` (false).
 2. Фоновый опрос: условие в `poll_sticky_layout_background` расширить до
    «индикатор включён **или** сбор включён» (переименовать в
    `poll_matrix_background`).
 3. В `finish_matrix_tester_poll`: `LayerTracker::update` → для каждого нового
    нажатия, если сбор не на паузе, — `KeyStatsStore` + `TransitionRecorder`.
-4. Пауза: вкладка Matrix Tester открыта; Typing Trainer идёт
-   (`!is_finished()` на его странице); клавиатура заблокирована; не Vial.
+4. Пауза: открыта страница Matrix Tester или Typing Trainer (вся страница
+   тренажёра, включая первое нажатие, которое запускает заезд); клавиатура
+   заблокирована; не Vial. Частота перерисовки в трее учитывает включённый
+   сбор так же, как Layout Indicator.
    Причину паузы хранить для отображения на странице.
-5. Хранение: `key_stats_<keyboard_id>.json` в каталоге конфигурации
-   (fallback — slug имени, как в `layer_names_path`). Загрузка при подключении
-   устройства, запись раз в 60 с при изменениях и в `on_exit` (рядом с
-   `flush_typing_trainer_symbol_stats`). Смена устройства — flush старого.
+5. Хранение: `<config>/entropy/key_stats/<keyboard_id hex>/<YYYY-MM>.json` —
+   по файлу на месяц, чтобы автосохранение переписывало только текущий месяц
+   (fallback для id — slug имени раскладки). Загрузка при первом нажатии или
+   открытии страницы, запись раз в 60 с при изменениях, при отключении
+   клавиатуры и в `on_exit`. Нечитаемый файл переименовывается в `.json.bad`,
+   а не перезаписывается.
 6. Дата — `chrono::Local::now().date_naive()` в момент нажатия.
 
 Готово, когда: включил сбор, попечатал, свернул в трей, попечатал — файл
