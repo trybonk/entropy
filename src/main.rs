@@ -14,6 +14,9 @@ mod i18n;
 mod keyboard;
 mod keycode;
 mod keycode_picker;
+// Wired into the app in a later step of the key heatmap work.
+#[cfg_attr(not(test), allow(dead_code))]
+mod key_stats;
 #[cfg(test)]
 mod layouts;
 #[cfg(target_os = "linux")]

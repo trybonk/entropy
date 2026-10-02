@@ -1,7 +1,7 @@
 //! Validation helpers for embedded Ergohaven layout fixtures.
 use crate::keyboard::PhysicalKey;
 
-const K03_JSON: &str = include_str!("layouts/k03.json");
+pub(crate) const K03_JSON: &str = include_str!("layouts/k03.json");
 const IMPERIAL44_JSON: &str = include_str!("layouts/imperial44.json");
 const OP36_JSON: &str = include_str!("layouts/op36.json");
 
@@ -27,7 +27,7 @@ static LAYOUTS: &[EmbeddedLayout] = &[
 
 /// Parse the embedded JSON format: `layouts.default_transform.layout` is an array of
 /// `{ row, col, x, y, r? }` with absolute coordinates in KLE units.
-fn parse_embedded_json(json: &str) -> Option<Vec<PhysicalKey>> {
+pub(crate) fn parse_embedded_json(json: &str) -> Option<Vec<PhysicalKey>> {
     let root: serde_json::Value = serde_json::from_str(json).ok()?;
     let layout_arr = root
         .get("layouts")?
