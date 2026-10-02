@@ -47,21 +47,23 @@ pub(crate) fn ironbow(t: f32) -> Color32 {
     Color32::from_rgb(lerp(c0[0], c1[0]), lerp(c0[1], c1[1]), lerp(c0[2], c1[2]))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KeyHeatmapPeriod {
     ThisWeek,
     LastWeek,
     AllTime,
+    /// Days picked in the activity calendar.
+    Custom(DateRange),
 }
 
 impl KeyHeatmapPeriod {
-    const ALL: [Self; 3] = [Self::ThisWeek, Self::LastWeek, Self::AllTime];
+    const PRESETS: [Self; 3] = [Self::ThisWeek, Self::LastWeek, Self::AllTime];
 
-    fn label_key(self) -> &'static str {
+    fn preset_label_key(self) -> &'static str {
         match self {
             Self::ThisWeek => "key_heatmap.this_week",
             Self::LastWeek => "key_heatmap.last_week",
-            Self::AllTime => "key_heatmap.all_time",
+            Self::AllTime | Self::Custom(_) => "key_heatmap.all_time",
         }
     }
 
@@ -75,7 +77,41 @@ impl KeyHeatmapPeriod {
                 monday - chrono::Days::new(1),
             )),
             Self::AllTime => None,
+            Self::Custom(range) => Some(range),
         }
+    }
+}
+
+fn short_date(date: chrono::NaiveDate) -> String {
+    date.format("%d.%m").to_string()
+}
+
+fn custom_period_label(range: DateRange) -> String {
+    if range.start == range.end {
+        short_date(range.start)
+    } else {
+        format!("{}–{}", short_date(range.start), short_date(range.end))
+    }
+}
+
+/// Days in the calendar: whole weeks (Monday first), the last one holding today.
+const CALENDAR_WEEKS: u64 = 53;
+
+fn calendar_first_day(today: chrono::NaiveDate) -> chrono::NaiveDate {
+    let monday = today - chrono::Days::new(today.weekday().num_days_from_monday() as u64);
+    monday - chrono::Days::new((CALENDAR_WEEKS - 1) * 7)
+}
+
+/// The range a calendar click selects: a single day, or with Shift the span
+/// from the previously clicked day.
+fn calendar_click_range(
+    anchor: Option<chrono::NaiveDate>,
+    clicked: chrono::NaiveDate,
+    extend: bool,
+) -> DateRange {
+    match anchor.filter(|_| extend) {
+        Some(anchor) => DateRange::new(anchor, clicked),
+        None => DateRange::new(clicked, clicked),
     }
 }
 
@@ -86,6 +122,9 @@ pub(crate) struct KeyHeatmapPageState {
     /// Matrix position whose routes are drawn.
     pub(crate) selected_key: Option<u16>,
     pub(crate) direction: TransitionDirection,
+    /// Day the last plain calendar click picked; Shift+click extends from it.
+    calendar_anchor: Option<chrono::NaiveDate>,
+    clear_dialog_open: bool,
     heat_texture: Option<(u64, egui::TextureHandle)>,
     heat_built_at: Option<std::time::Instant>,
 }
@@ -97,6 +136,8 @@ impl Default for KeyHeatmapPageState {
             period: KeyHeatmapPeriod::ThisWeek,
             selected_key: None,
             direction: TransitionDirection::Outgoing,
+            calendar_anchor: None,
+            clear_dialog_open: false,
             heat_texture: None,
             heat_built_at: None,
         }
@@ -452,10 +493,13 @@ impl EntropyApp {
         );
 
         // Controls: collection switch with its status, period and scale.
-        let period_labels: Vec<String> = KeyHeatmapPeriod::ALL
+        let mut period_labels: Vec<String> = KeyHeatmapPeriod::PRESETS
             .iter()
-            .map(|period| crate::i18n::tr_catalog(lang, period.label_key()).to_string())
+            .map(|period| crate::i18n::tr_catalog(lang, period.preset_label_key()).to_string())
             .collect();
+        if let KeyHeatmapPeriod::Custom(range) = self.key_heatmap_page.period {
+            period_labels.push(custom_period_label(range));
+        }
         let scale_labels = vec![
             crate::i18n::tr_catalog(lang, "key_heatmap.scale_log").to_string(),
             crate::i18n::tr_catalog(lang, "key_heatmap.scale_linear").to_string(),
@@ -489,18 +533,22 @@ impl EntropyApp {
                         .color(status_color),
                 );
                 ui.add_space(16.0);
-                let selected_period = KeyHeatmapPeriod::ALL
+                // A calendar selection shows up as a fourth, selected segment.
+                let selected_period = KeyHeatmapPeriod::PRESETS
                     .iter()
                     .position(|period| *period == self.key_heatmap_page.period)
-                    .unwrap_or(0);
+                    .unwrap_or(KeyHeatmapPeriod::PRESETS.len());
+                let period_width = 100.0 * period_labels.len() as f32;
                 if let Some(picked) = crate::ui_style::settings_segmented_control(
                     ui,
                     "key_heatmap_period",
                     &period_labels,
                     selected_period,
-                    Vec2::new(300.0, 28.0),
+                    Vec2::new(period_width, 28.0),
                 ) {
-                    self.key_heatmap_page.period = KeyHeatmapPeriod::ALL[picked];
+                    if let Some(preset) = KeyHeatmapPeriod::PRESETS.get(picked) {
+                        self.key_heatmap_page.period = *preset;
+                    }
                 }
                 ui.add_space(8.0);
                 let selected_scale = usize::from(!self.app_settings.key_heatmap.log_scale);
@@ -533,7 +581,265 @@ impl EntropyApp {
             egui::pos2(content_rect.right() - 320.0, band_top),
             egui::pos2(content_rect.right() - 16.0, band_bottom),
         );
+        let calendar_rect = egui::Rect::from_min_max(
+            egui::pos2(content_rect.left() + 16.0, band_top),
+            egui::pos2(table_rect.left() - 24.0, band_bottom),
+        );
         self.draw_key_heatmap_board(ui, layout, board_rect, table_rect, dark);
+        self.draw_key_heatmap_calendar(ui, calendar_rect, dark);
+        self.draw_key_heatmap_clear_dialog(ui.ctx(), dark);
+    }
+
+    fn draw_key_heatmap_calendar(&mut self, ui: &mut egui::Ui, rect: egui::Rect, dark: bool) {
+        let lang = self.app_settings.language;
+        let painter = ui.painter().clone();
+        let today = chrono::Local::now().date_naive();
+        let first_day = calendar_first_day(today);
+        let layer_filter = self
+            .key_heatmap_page
+            .layer
+            .and_then(|layer| u8::try_from(layer).ok());
+        let totals = self.key_stats.store.daily_totals(layer_filter);
+        let max_total = totals.values().copied().max().unwrap_or(0);
+        let selected_range = self.key_heatmap_page.period.range(today);
+
+        let label_width = 26.0;
+        let header_height = 16.0;
+        let footer_height = 30.0;
+        let gap = 2.0;
+        let cell = ((rect.width() - label_width) / CALENDAR_WEEKS as f32 - gap)
+            .min((rect.height() - header_height - footer_height) / 7.0 - gap)
+            .clamp(4.0, 14.0);
+        let step = cell + gap;
+        let grid_origin = egui::pos2(rect.left() + label_width, rect.top() + header_height);
+
+        let months: Vec<&str> = crate::i18n::tr_catalog(lang, "key_heatmap.months")
+            .split(',')
+            .map(str::trim)
+            .collect();
+        let weekdays: Vec<&str> = crate::i18n::tr_catalog(lang, "key_heatmap.weekdays")
+            .split(',')
+            .map(str::trim)
+            .collect();
+        let muted = app_muted_text(dark);
+        for row in [0_usize, 2, 4] {
+            if let Some(name) = weekdays.get(row) {
+                painter.text(
+                    egui::pos2(rect.left(), grid_origin.y + row as f32 * step + cell * 0.5),
+                    egui::Align2::LEFT_CENTER,
+                    *name,
+                    FontId::proportional(9.5),
+                    muted,
+                );
+            }
+        }
+
+        let empty_fill = if dark {
+            Color32::from_rgb(44, 44, 48)
+        } else {
+            Color32::from_rgb(232, 232, 236)
+        };
+        let shift_held = ui.input(|i| i.modifiers.shift);
+        let mut clicked_day = None;
+        let mut previous_month = None;
+        for week in 0..CALENDAR_WEEKS {
+            let week_start = first_day + chrono::Days::new(week * 7);
+            let x = grid_origin.x + week as f32 * step;
+            if previous_month != Some(week_start.month()) {
+                previous_month = Some(week_start.month());
+                // Skip a label squeezed against the left edge by a partial month.
+                if week > 0 || week_start.day() <= 7 {
+                    if let Some(name) = months.get(week_start.month0() as usize) {
+                        painter.text(
+                            egui::pos2(x, rect.top()),
+                            egui::Align2::LEFT_TOP,
+                            *name,
+                            FontId::proportional(9.5),
+                            muted,
+                        );
+                    }
+                }
+            }
+            for weekday in 0..7_u64 {
+                let date = week_start + chrono::Days::new(weekday);
+                if date > today {
+                    break;
+                }
+                let cell_rect = egui::Rect::from_min_size(
+                    egui::pos2(x, grid_origin.y + weekday as f32 * step),
+                    Vec2::splat(cell),
+                );
+                let total = totals.get(&date).copied().unwrap_or(0);
+                let fill = if total == 0 {
+                    empty_fill
+                } else {
+                    ironbow(0.18 + 0.82 * heat_weight(total, max_total, true))
+                };
+                painter.rect_filled(cell_rect, 2.0, fill);
+                if selected_range.is_some_and(|range| range.contains(date)) {
+                    painter.rect_stroke(
+                        cell_rect.expand(0.5),
+                        2.0,
+                        Stroke::new(1.4_f32, ROUTE_COLOR),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+                let response = ui.interact(
+                    cell_rect,
+                    ui.id().with(("key_heatmap_day", date.num_days_from_ce())),
+                    Sense::click(),
+                );
+                if response.clicked() {
+                    clicked_day = Some(date);
+                }
+                response.on_hover_text(crate::i18n::tr_catalog_format(
+                    lang,
+                    "key_heatmap.day_tooltip",
+                    &[
+                        ("date", &date.format("%d.%m.%Y").to_string()),
+                        ("count", &total.to_string()),
+                    ],
+                ));
+            }
+        }
+        if let Some(day) = clicked_day {
+            let range =
+                calendar_click_range(self.key_heatmap_page.calendar_anchor, day, shift_held);
+            if !shift_held {
+                self.key_heatmap_page.calendar_anchor = Some(day);
+            }
+            self.key_heatmap_page.period = KeyHeatmapPeriod::Custom(range);
+        }
+
+        let footer = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.bottom() - footer_height + 6.0),
+            rect.right_bottom(),
+        );
+        crate::ui_style::allocate_ui_at_rect(ui, footer, |ui| {
+            ui.horizontal(|ui| {
+                if crate::ui_style::modern_button(
+                    ui,
+                    crate::i18n::tr_catalog(lang, "key_heatmap.clear"),
+                    Vec2::new(150.0, 24.0),
+                    !self.key_stats.store.is_empty(),
+                )
+                .clicked()
+                {
+                    self.key_heatmap_page.clear_dialog_open = true;
+                }
+                ui.label(
+                    RichText::new(crate::i18n::tr_catalog(lang, "key_heatmap.calendar_hint"))
+                        .size(11.0)
+                        .color(muted),
+                );
+            });
+        });
+    }
+
+    fn draw_key_heatmap_clear_dialog(&mut self, ctx: &egui::Context, dark: bool) {
+        if !self.key_heatmap_page.clear_dialog_open {
+            return;
+        }
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.key_heatmap_page.clear_dialog_open = false;
+            return;
+        }
+        let lang = self.app_settings.language;
+        let screen_rect = ctx.content_rect();
+        egui::Area::new("key_heatmap_clear_backdrop".into())
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen_rect.min)
+            .show(ctx, |ui| {
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, screen_rect.size());
+                ui.interact(
+                    rect,
+                    egui::Id::new("key_heatmap_clear_backdrop_blocker"),
+                    egui::Sense::click_and_drag(),
+                );
+                ui.painter().rect_filled(
+                    rect,
+                    0.0,
+                    Color32::from_black_alpha(crate::ui_style::modal_backdrop_alpha(dark)),
+                );
+            });
+
+        let today = chrono::Local::now().date_naive();
+        let period_range = self.key_heatmap_page.period.range(today);
+        let period_label = match self.key_heatmap_page.period {
+            KeyHeatmapPeriod::Custom(range) => custom_period_label(range),
+            period => crate::i18n::tr_catalog(lang, period.preset_label_key()).to_string(),
+        };
+        let mut open = true;
+        let mut action: Option<Option<DateRange>> = None;
+        let mut cancel = false;
+        crate::ui_style::centered_modal_window(
+            ctx,
+            crate::i18n::tr_catalog(lang, "key_heatmap.clear_title"),
+            egui::Id::new("key_heatmap_clear_window"),
+            &mut open,
+            Vec2::new(460.0, 190.0),
+        )
+        .show(ctx, |ui| {
+            ui.set_min_size(Vec2::new(440.0, 150.0));
+            ui.vertical_centered(|ui| {
+                ui.add_space(14.0);
+                ui.label(
+                    RichText::new(crate::i18n::tr_catalog(lang, "key_heatmap.clear_body"))
+                        .size(13.0),
+                );
+                ui.add_space(18.0);
+                ui.horizontal(|ui| {
+                    let button = Vec2::new(136.0, 30.0);
+                    ui.add_space((ui.available_width() - button.x * 3.0 - 20.0).max(0.0) * 0.5);
+                    let clear_period = crate::i18n::tr_catalog_format(
+                        lang,
+                        "key_heatmap.clear_period",
+                        &[("period", &period_label)],
+                    );
+                    // "All time" as a period already means everything.
+                    if crate::ui_style::modern_button(
+                        ui,
+                        &clear_period,
+                        button,
+                        period_range.is_some(),
+                    )
+                    .clicked()
+                    {
+                        action = Some(period_range);
+                    }
+                    ui.add_space(10.0);
+                    if crate::ui_style::modern_button(
+                        ui,
+                        crate::i18n::tr_catalog(lang, "key_heatmap.clear_all"),
+                        button,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        action = Some(None);
+                    }
+                    ui.add_space(10.0);
+                    if crate::ui_style::modern_button(
+                        ui,
+                        crate::i18n::tr_catalog(lang, "key_heatmap.cancel"),
+                        button,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        cancel = true;
+                    }
+                });
+            });
+        });
+
+        if let Some(range) = action {
+            self.key_stats.store.clear(range);
+            self.flush_key_stats();
+            self.key_heatmap_page.clear_dialog_open = false;
+        } else {
+            self.key_heatmap_page.clear_dialog_open = open && !cancel;
+        }
     }
 
     fn draw_key_heatmap_board(
@@ -1044,6 +1350,35 @@ mod tests {
         assert_eq!(route_width(10, 10), ROUTE_MAX_WIDTH);
         assert_eq!(route_width(0, 10), ROUTE_MIN_WIDTH);
         assert_eq!(route_width(5, 0), ROUTE_MIN_WIDTH);
+    }
+
+    #[test]
+    fn calendar_covers_whole_weeks_ending_this_week() {
+        let friday = chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let first = calendar_first_day(friday);
+        assert_eq!(first.weekday(), chrono::Weekday::Mon);
+        assert_eq!((friday - first).num_days(), 52 * 7 + 4);
+    }
+
+    #[test]
+    fn calendar_shift_click_extends_from_the_anchor() {
+        let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap();
+        assert_eq!(
+            calendar_click_range(Some(day(1)), day(5), false),
+            DateRange::new(day(5), day(5))
+        );
+        assert_eq!(
+            calendar_click_range(Some(day(5)), day(1), true),
+            DateRange::new(day(1), day(5))
+        );
+        assert_eq!(
+            calendar_click_range(None, day(3), true),
+            DateRange::new(day(3), day(3))
+        );
+        assert_eq!(
+            custom_period_label(DateRange::new(day(1), day(5))),
+            "01.10–05.10"
+        );
     }
 
     #[test]
