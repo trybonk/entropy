@@ -2,37 +2,54 @@ name: Build
 
 on:
   workflow_dispatch:  # manual only — disabled automatic build
+    inputs:
+      platform:
+        description: Platforms to build
+        type: choice
+        default: windows
+        options:
+          - windows
+          - linux
+          - macos
+          - all
   push:
     branches: [disabled-auto-build]
   pull_request:
     branches: [main]
 
 jobs:
+  plan:
+    name: Plan platforms
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          # Manual runs build the chosen platform; pull requests build all of them.
+          PLATFORM: ${{ inputs.platform || 'all' }}
+        run: |
+          all='[
+            {"os": "ubuntu-latest", "kind": "linux", "artifact": "entropy-linux",
+             "binary": "target/release/entropy"},
+            {"os": "windows-latest", "kind": "windows", "artifact": "entropy-windows",
+             "binary": "target/release/entropy.exe"},
+            {"os": "macos-15", "kind": "macos", "artifact": "entropy-macos-arm64",
+             "binary": "dist/macos/*.app.zip", "target": "aarch64-apple-darwin"},
+            {"os": "macos-15-intel", "kind": "macos", "artifact": "entropy-macos-x86_64",
+             "binary": "dist/macos/*.app.zip", "target": "x86_64-apple-darwin"}
+          ]'
+          include=$(jq -c --arg platform "$PLATFORM" \
+            'map(select($platform == "all" or .kind == $platform))' <<<"$all")
+          echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.os }})
+    needs: plan
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            kind: linux
-            artifact: entropy-linux
-            binary: target/release/entropy
-          - os: windows-latest
-            kind: windows
-            artifact: entropy-windows
-            binary: target/release/entropy.exe
-          - os: macos-15
-            kind: macos
-            artifact: entropy-macos-arm64
-            binary: dist/macos/*.app.zip
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            kind: macos
-            artifact: entropy-macos-x86_64
-            binary: dist/macos/*.app.zip
-            target: x86_64-apple-darwin
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v7
