@@ -1,5 +1,7 @@
 use super::*;
-use crate::key_stats::{split_halves, DateRange, KeyPos, TransitionCount, TransitionDirection};
+use crate::key_stats::{
+    split_halves, DateRange, KeyHeatmapPalette, KeyPos, TransitionCount, TransitionDirection,
+};
 use chrono::Datelike;
 use key_heatmap_runtime::KeyStatsPauseReason;
 
@@ -14,11 +16,12 @@ const HEAT_PIXEL_SIZE: f32 = 2.0;
 /// Rebuilding the heat texture costs a few milliseconds, so live typing
 /// refreshes it at most this often.
 const HEAT_REBUILD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
-/// Heat is dimmed to this gray tint while routes are drawn on top of it.
-const HEAT_DIM_TINT: u8 = 105;
-const ROUTE_COLOR: Color32 = Color32::from_rgb(120, 222, 255);
+/// Heat fades toward the page to this opacity while routes are drawn on top of it.
+const HEAT_DIM_ALPHA: u8 = 110;
 const ROUTE_MIN_WIDTH: f32 = 1.5;
-const ROUTE_MAX_WIDTH: f32 = 8.0;
+const ROUTE_MAX_WIDTH: f32 = 6.0;
+/// Room under the bottom band for the app signature and the theme switch.
+const FOOTER_RESERVE: f32 = 44.0;
 /// Route limits offered next to the table; 0 shows every route.
 const TOP_TRANSITION_CHOICES: [u8; 4] = [3, 5, 10, 0];
 
@@ -33,18 +36,117 @@ const IRONBOW_STOPS: [(f32, [u8; 3]); 7] = [
     (1.00, [255, 252, 235]),
 ];
 
-pub(crate) fn ironbow(t: f32) -> Color32 {
+fn mix_color(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
-    let upper = IRONBOW_STOPS
+    let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+}
+
+/// Coldest heat: a quiet step off the page background.
+fn heat_neutral(dark: bool) -> Color32 {
+    if dark {
+        Color32::from_rgb(46, 46, 50)
+    } else {
+        Color32::from_rgb(226, 226, 230)
+    }
+}
+
+/// Color stops of `palette`, cold to hot. Except for the thermal camera
+/// palette, heat starts near the page color and its hot end contrasts most
+/// with the page: darker on the light theme, brighter on the dark one.
+fn palette_stops(palette: KeyHeatmapPalette, dark: bool, accent: Color32) -> Vec<(f32, Color32)> {
+    let neutral = heat_neutral(dark);
+    let rgb = Color32::from_rgb;
+    match palette {
+        KeyHeatmapPalette::Accent => {
+            let hot = if dark {
+                mix_color(accent, Color32::WHITE, 0.6)
+            } else {
+                mix_color(accent, rgb(40, 20, 30), 0.55)
+            };
+            vec![
+                (0.0, neutral),
+                (0.3, mix_color(neutral, accent, 0.45)),
+                (0.65, accent),
+                (1.0, hot),
+            ]
+        }
+        KeyHeatmapPalette::Amber if dark => vec![
+            (0.0, neutral),
+            (0.3, rgb(104, 66, 48)),
+            (0.55, rgb(192, 116, 88)),
+            (0.78, rgb(210, 156, 92)),
+            (1.0, rgb(250, 222, 160)),
+        ],
+        KeyHeatmapPalette::Amber => vec![
+            (0.0, neutral),
+            (0.25, rgb(236, 214, 170)),
+            (0.5, rgb(210, 156, 92)),
+            (0.75, rgb(192, 116, 88)),
+            (1.0, rgb(140, 58, 52)),
+        ],
+        KeyHeatmapPalette::Glacier if dark => vec![
+            (0.0, neutral),
+            (0.3, rgb(36, 84, 84)),
+            (0.55, rgb(88, 158, 148)),
+            (0.78, rgb(116, 154, 212)),
+            (1.0, rgb(206, 224, 250)),
+        ],
+        KeyHeatmapPalette::Glacier => vec![
+            (0.0, neutral),
+            (0.25, rgb(200, 226, 222)),
+            (0.5, rgb(88, 158, 148)),
+            (0.75, rgb(80, 112, 184)),
+            (1.0, rgb(78, 62, 140)),
+        ],
+        KeyHeatmapPalette::Graphite => {
+            let hot = if dark {
+                rgb(236, 236, 240)
+            } else {
+                rgb(36, 36, 40)
+            };
+            vec![(0.0, neutral), (1.0, hot)]
+        }
+        KeyHeatmapPalette::Ironbow => IRONBOW_STOPS
+            .iter()
+            .map(|(stop, [r, g, b])| (*stop, rgb(*r, *g, *b)))
+            .collect(),
+    }
+}
+
+/// Color at `t` in `0.0..=1.0` along `stops`.
+fn heat_color(stops: &[(f32, Color32)], t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let upper = stops
         .iter()
         .position(|(stop, _)| *stop >= t)
-        .unwrap_or(IRONBOW_STOPS.len() - 1)
+        .unwrap_or(stops.len() - 1)
         .max(1);
-    let (t0, c0) = IRONBOW_STOPS[upper - 1];
-    let (t1, c1) = IRONBOW_STOPS[upper];
-    let k = ((t - t0) / (t1 - t0)).clamp(0.0, 1.0);
-    let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
-    Color32::from_rgb(lerp(c0[0], c1[0]), lerp(c0[1], c1[1]), lerp(c0[2], c1[2]))
+    let (t0, c0) = stops[upper - 1];
+    let (t1, c1) = stops[upper];
+    mix_color(c0, c1, (t - t0) / (t1 - t0))
+}
+
+/// Legend color readable on `background`.
+fn legend_color(background: Color32) -> Color32 {
+    let luma = 0.299 * background.r() as f32
+        + 0.587 * background.g() as f32
+        + 0.114 * background.b() as f32;
+    if luma > 150.0 {
+        Color32::from_black_alpha(150)
+    } else {
+        Color32::from_white_alpha(160)
+    }
+}
+
+fn palette_label_key(palette: KeyHeatmapPalette) -> &'static str {
+    match palette {
+        KeyHeatmapPalette::Accent => "key_heatmap.palette_accent",
+        KeyHeatmapPalette::Amber => "key_heatmap.palette_amber",
+        KeyHeatmapPalette::Glacier => "key_heatmap.palette_glacier",
+        KeyHeatmapPalette::Graphite => "key_heatmap.palette_graphite",
+        KeyHeatmapPalette::Ironbow => "key_heatmap.palette_ironbow",
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,7 +262,12 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 /// Renders the heat field over `area`. Each pixel takes its keyboard half
 /// from the nearest key, so heat never bleeds across the gap of a split
 /// keyboard.
-fn render_heat_image(area: egui::Rect, unit: f32, sources: &[HeatSource]) -> egui::ColorImage {
+fn render_heat_image(
+    area: egui::Rect,
+    unit: f32,
+    sources: &[HeatSource],
+    stops: &[(f32, Color32)],
+) -> egui::ColorImage {
     let width = (area.width() / HEAT_PIXEL_SIZE).ceil().max(1.0) as usize;
     let height = (area.height() / HEAT_PIXEL_SIZE).ceil().max(1.0) as usize;
     let mut image = egui::ColorImage::filled([width, height], Color32::TRANSPARENT);
@@ -203,7 +310,7 @@ fn render_heat_image(area: egui::Rect, unit: f32, sources: &[HeatSource]) -> egu
                     }
                 })
                 .sum();
-            let color = ironbow(heat.min(1.0));
+            let color = heat_color(stops, heat.min(1.0));
             image.pixels[y * width + x] = Color32::from_rgba_unmultiplied(
                 color.r(),
                 color.g(),
@@ -263,6 +370,8 @@ fn paint_route_arrow(
     to: egui::Pos2,
     width: f32,
     key_radius: f32,
+    color: Color32,
+    halo: Color32,
 ) {
     let delta = to - from;
     let length = delta.length();
@@ -274,7 +383,7 @@ fn paint_route_arrow(
     let start = from + dir * key_radius;
     let end = to - dir * key_radius;
     let control = start + (end - start) * 0.5 + normal * (length * 0.18);
-    let head_len = (width * 2.6).max(9.0);
+    let head_len = (width * 2.4).max(9.0);
     let points: Vec<egui::Pos2> = (0..=24)
         .map(|i| {
             let t = i as f32 / 24.0;
@@ -287,7 +396,7 @@ fn paint_route_arrow(
         .collect();
     let tangent = (end - control).normalized();
     let head_base = end - tangent * head_len;
-    let head_normal = egui::vec2(-tangent.y, tangent.x) * (head_len * 0.55);
+    let head_normal = egui::vec2(-tangent.y, tangent.x) * (head_len * 0.45);
     let shaft: Vec<egui::Pos2> = points
         .into_iter()
         .take_while(|point| (*point - start).length() <= (head_base - start).length())
@@ -295,18 +404,20 @@ fn paint_route_arrow(
         .collect();
     let head = vec![end, head_base + head_normal, head_base - head_normal];
 
-    let shadow = Color32::from_black_alpha(140);
+    // A page-colored halo separates the arrow from the heat and other arrows.
     painter.add(egui::Shape::line(
         shaft.clone(),
-        Stroke::new(width + 2.0, shadow),
+        Stroke::new(width + 3.0, halo),
     ));
     painter.add(egui::Shape::convex_polygon(
         head.clone(),
-        shadow,
-        Stroke::new(2.0, shadow),
+        halo,
+        Stroke::new(3.0, halo),
     ));
-    painter.add(egui::Shape::line(shaft, Stroke::new(width, ROUTE_COLOR)));
-    painter.add(egui::Shape::convex_polygon(head, ROUTE_COLOR, Stroke::NONE));
+    painter.circle_filled(start, width * 0.5 + 2.5, halo);
+    painter.add(egui::Shape::line(shaft, Stroke::new(width, color)));
+    painter.add(egui::Shape::convex_polygon(head, color, Stroke::NONE));
+    painter.circle_filled(start, width * 0.5 + 1.0, color);
 }
 
 fn pause_reason_key(reason: Option<KeyStatsPauseReason>) -> &'static str {
@@ -506,7 +617,7 @@ impl EntropyApp {
         ];
         let controls_rect = egui::Rect::from_center_size(
             egui::pos2(content_rect.center().x, controls_y),
-            Vec2::new(content_rect.width().min(860.0), 30.0),
+            Vec2::new(content_rect.width().min(1000.0), 30.0),
         );
         let mut settings_changed = false;
         crate::ui_style::allocate_ui_at_rect(ui, controls_rect, |ui| {
@@ -532,6 +643,17 @@ impl EntropyApp {
                         .size(12.0)
                         .color(status_color),
                 );
+                if reason == Some(KeyStatsPauseReason::Locked)
+                    && crate::ui_style::modern_button(
+                        ui,
+                        crate::i18n::tr_catalog(lang, "key_heatmap.unlock"),
+                        Vec2::new(130.0, 24.0),
+                        !self.unlock_open,
+                    )
+                    .clicked()
+                {
+                    self.unlock_open = true;
+                }
                 ui.add_space(16.0);
                 // A calendar selection shows up as a fourth, selected segment.
                 let selected_period = KeyHeatmapPeriod::PRESETS
@@ -569,9 +691,14 @@ impl EntropyApp {
         }
 
         self.draw_key_heatmap_layer_switcher(ui, egui::pos2(content_rect.center().x, layer_y));
+        self.draw_key_heatmap_palette_picker(
+            ui,
+            egui::pos2(content_rect.right() - 24.0, layer_y),
+            dark,
+        );
 
         // Bottom band: activity calendar on the left, routes table on the right.
-        let band_bottom = ui.max_rect().bottom() - 14.0;
+        let band_bottom = ui.max_rect().bottom() - FOOTER_RESERVE;
         let band_top = band_bottom - 160.0;
         let board_rect = egui::Rect::from_min_max(
             egui::pos2(content_rect.left(), layer_y + 28.0),
@@ -590,6 +717,81 @@ impl EntropyApp {
         self.draw_key_heatmap_clear_dialog(ui.ctx(), dark);
     }
 
+    /// Gradient chips of every palette, right-aligned at `right_center`.
+    fn draw_key_heatmap_palette_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        right_center: egui::Pos2,
+        dark: bool,
+    ) {
+        let lang = self.app_settings.language;
+        let painter = ui.painter().clone();
+        let chip = Vec2::new(30.0, 12.0);
+        let gap = 8.0;
+        let palettes = KeyHeatmapPalette::ALL;
+        let chips_left = right_center.x - palettes.len() as f32 * (chip.x + gap) + gap;
+        painter.text(
+            egui::pos2(chips_left - 10.0, right_center.y),
+            egui::Align2::RIGHT_CENTER,
+            crate::i18n::tr_catalog(lang, "key_heatmap.palette"),
+            FontId::proportional(12.0),
+            app_muted_text(dark),
+        );
+        let current = self.app_settings.key_heatmap.palette;
+        let ring = if dark {
+            Color32::from_gray(220)
+        } else {
+            Color32::from_gray(60)
+        };
+        for (i, palette) in palettes.into_iter().enumerate() {
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    chips_left + i as f32 * (chip.x + gap),
+                    right_center.y - chip.y * 0.5,
+                ),
+                chip,
+            );
+            let stops = palette_stops(palette, dark, app_accent());
+            let mut mesh = egui::Mesh::default();
+            let steps = 16_u32;
+            for step in 0..=steps {
+                let t = step as f32 / steps as f32;
+                let x = rect.left() + rect.width() * t;
+                let color = heat_color(&stops, t);
+                mesh.colored_vertex(egui::pos2(x, rect.top()), color);
+                mesh.colored_vertex(egui::pos2(x, rect.bottom()), color);
+            }
+            for step in 0..steps {
+                let a = step * 2;
+                mesh.add_triangle(a, a + 1, a + 2);
+                mesh.add_triangle(a + 1, a + 3, a + 2);
+            }
+            painter.add(mesh);
+            let response = ui.interact(
+                rect.expand(3.0),
+                ui.id().with(("key_heatmap_palette", i)),
+                Sense::click(),
+            );
+            let stroke = if palette == current {
+                Stroke::new(1.6_f32, ring)
+            } else if response.hovered() {
+                Stroke::new(1.0_f32, app_accent())
+            } else {
+                Stroke::new(1.0_f32, app_border_color(dark))
+            };
+            let offset = if palette == current { 2.5 } else { 0.0 };
+            painter.rect_stroke(rect.expand(offset), 2.0, stroke, egui::StrokeKind::Outside);
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if response.clicked() && palette != current {
+                self.app_settings.key_heatmap.palette = palette;
+                save_app_settings(&self.app_settings);
+            }
+            response.on_hover_text(crate::i18n::tr_catalog(lang, palette_label_key(palette)));
+        }
+    }
+
     fn draw_key_heatmap_calendar(&mut self, ui: &mut egui::Ui, rect: egui::Rect, dark: bool) {
         let lang = self.app_settings.language;
         let painter = ui.painter().clone();
@@ -602,6 +804,12 @@ impl EntropyApp {
         let totals = self.key_stats.store.daily_totals(layer_filter);
         let max_total = totals.values().copied().max().unwrap_or(0);
         let selected_range = self.key_heatmap_page.period.range(today);
+        let stops = palette_stops(self.app_settings.key_heatmap.palette, dark, app_accent());
+        let selection = if dark {
+            Color32::from_gray(220)
+        } else {
+            Color32::from_gray(60)
+        };
 
         let label_width = 26.0;
         let header_height = 16.0;
@@ -673,14 +881,14 @@ impl EntropyApp {
                 let fill = if total == 0 {
                     empty_fill
                 } else {
-                    ironbow(0.18 + 0.82 * heat_weight(total, max_total, true))
+                    heat_color(&stops, 0.25 + 0.75 * heat_weight(total, max_total, true))
                 };
                 painter.rect_filled(cell_rect, 2.0, fill);
                 if selected_range.is_some_and(|range| range.contains(date)) {
                     painter.rect_stroke(
                         cell_rect.expand(0.5),
                         2.0,
-                        Stroke::new(1.4_f32, ROUTE_COLOR),
+                        Stroke::new(1.4_f32, selection),
                         egui::StrokeKind::Outside,
                     );
                 }
@@ -943,6 +1151,9 @@ impl EntropyApp {
             .unwrap_or_default();
 
         // Heat texture, rebuilt only when the picture would change.
+        let palette = self.app_settings.key_heatmap.palette;
+        let accent = app_accent();
+        let stops = palette_stops(palette, dark, accent);
         let heat_area = board_rect.intersect(ui.clip_rect());
         let texture_key = {
             use std::hash::{Hash, Hasher};
@@ -957,6 +1168,9 @@ impl EntropyApp {
             heat_area.min.y.to_bits().hash(&mut hasher);
             heat_area.max.x.to_bits().hash(&mut hasher);
             heat_area.max.y.to_bits().hash(&mut hasher);
+            palette.hash(&mut hasher);
+            dark.hash(&mut hasher);
+            accent.hash(&mut hasher);
             hasher.finish()
         };
         let now = std::time::Instant::now();
@@ -972,7 +1186,7 @@ impl EntropyApp {
         if stale && throttled && self.key_heatmap_page.heat_texture.is_some() {
             ui.ctx().request_repaint_after(HEAT_REBUILD_INTERVAL);
         } else if stale {
-            let image = render_heat_image(heat_area, geometry.unit, &sources);
+            let image = render_heat_image(heat_area, geometry.unit, &sources, &stops);
             let texture =
                 ui.ctx()
                     .load_texture("key_heatmap_heat", image, egui::TextureOptions::LINEAR);
@@ -985,7 +1199,7 @@ impl EntropyApp {
                 heat_area,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 if selected.is_some() {
-                    Color32::from_gray(HEAT_DIM_TINT)
+                    Color32::from_white_alpha(HEAT_DIM_ALPHA)
                 } else {
                     Color32::WHITE
                 },
@@ -999,12 +1213,12 @@ impl EntropyApp {
         } else {
             Color32::from_black_alpha(54)
         };
-        let unused_outline = Color32::from_rgb(86, 170, 255);
+        let unused_outline = accent.gamma_multiply(0.75);
         let mut clicked_key = None;
         for (((key_idx, key), rect), source) in visible_keys.iter().zip(&key_rects).zip(&sources) {
             let count = counts.get(&matrix_idx(key)).copied().unwrap_or(0);
             let stroke = if selected == Some(matrix_idx(key)) {
-                Stroke::new(2.4_f32, ROUTE_COLOR)
+                Stroke::new(2.4_f32, accent)
             } else if count == 0 {
                 Stroke::new(1.4_f32, unused_outline)
             } else {
@@ -1023,12 +1237,11 @@ impl EntropyApp {
                     self.app_settings.key_legend_layout,
                 )
                 .replace('\n', " ");
-                let hot = source.weight > 0.7;
-                let color = if hot {
-                    Color32::from_black_alpha(150)
-                } else {
-                    Color32::from_white_alpha(150)
-                };
+                let mut under = heat_color(&stops, source.weight);
+                if selected.is_some() {
+                    under = mix_color(app_panel_fill(dark), under, HEAT_DIM_ALPHA as f32 / 255.0);
+                }
+                let color = legend_color(under);
                 let font_size = (geometry.unit * 0.2).clamp(8.0, 13.0);
                 paint_centered_text_rotated(
                     &painter.with_clip_rect(rect.shrink(3.0)),
@@ -1071,19 +1284,18 @@ impl EntropyApp {
         // Routes of the selected key: arrows to (or from) the busiest keys.
         let top = self.app_settings.key_heatmap.top_transitions;
         if let Some(selected_rect) = selected.and_then(key_rect_of) {
-            let arrows = physical_routes(&routes, top);
+            // Repeats of the selected key stay in the table only.
+            let arrows: Vec<(u16, u32)> = physical_routes(&routes, top)
+                .into_iter()
+                .filter(|(other, _)| Some(*other) != selected)
+                .collect();
             let max_route = arrows.first().map_or(0, |(_, count)| *count);
             let key_radius = geometry.unit * 0.42;
+            let halo = app_window_fill(dark).gamma_multiply(0.85);
             for (other, count) in arrows.iter().rev() {
                 let width = route_width(*count, max_route);
-                if Some(*other) == selected {
-                    painter.circle_stroke(
-                        selected_rect.center(),
-                        key_radius + width * 0.5 + 2.0,
-                        Stroke::new(width, ROUTE_COLOR),
-                    );
-                    continue;
-                }
+                // Rarer routes fade a little so the busiest stand out.
+                let color = accent.gamma_multiply(0.55 + 0.45 * *count as f32 / max_route as f32);
                 let Some(other_rect) = key_rect_of(*other) else {
                     continue;
                 };
@@ -1091,7 +1303,7 @@ impl EntropyApp {
                     TransitionDirection::Outgoing => (selected_rect.center(), other_rect.center()),
                     TransitionDirection::Incoming => (other_rect.center(), selected_rect.center()),
                 };
-                paint_route_arrow(&painter, from, to, width, key_radius);
+                paint_route_arrow(&painter, from, to, width, key_radius, color, halo);
             }
         }
         self.draw_key_heatmap_routes_table(ui, layout, table_rect, selected, &routes, dark);
@@ -1297,6 +1509,13 @@ impl EntropyApp {
 mod tests {
     use super::*;
 
+    fn ironbow(t: f32) -> Color32 {
+        heat_color(
+            &palette_stops(KeyHeatmapPalette::Ironbow, true, Color32::RED),
+            t,
+        )
+    }
+
     #[test]
     fn ironbow_runs_from_dark_to_white_hot() {
         assert_eq!(ironbow(0.0), Color32::from_rgb(8, 6, 30));
@@ -1310,6 +1529,43 @@ mod tests {
         assert!(
             samples.windows(2).all(|pair| pair[0] <= pair[1]),
             "{samples:?}"
+        );
+    }
+
+    #[test]
+    fn page_palettes_grow_away_from_the_page() {
+        let brightness = |c: Color32| c.r() as i32 + c.g() as i32 + c.b() as i32;
+        for accent in AppAccentColor::ALL {
+            for palette in KeyHeatmapPalette::ALL {
+                if palette == KeyHeatmapPalette::Ironbow {
+                    continue;
+                }
+                for dark in [false, true] {
+                    let stops = palette_stops(palette, dark, accent.color());
+                    assert_eq!(heat_color(&stops, 0.0), heat_neutral(dark));
+                    // Light theme: hotter is darker; dark theme: brighter.
+                    let sign = if dark { 1 } else { -1 };
+                    let samples: Vec<i32> = (0..=20)
+                        .map(|i| sign * brightness(heat_color(&stops, i as f32 / 20.0)))
+                        .collect();
+                    assert!(
+                        samples.windows(2).all(|pair| pair[0] <= pair[1]),
+                        "{palette:?} dark={dark}: {samples:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legends_contrast_with_the_heat() {
+        assert_eq!(
+            legend_color(Color32::from_gray(230)),
+            Color32::from_black_alpha(150)
+        );
+        assert_eq!(
+            legend_color(Color32::from_rgb(40, 10, 120)),
+            Color32::from_white_alpha(160)
         );
     }
 
@@ -1405,7 +1661,8 @@ mod tests {
                 weight: 0.0,
             },
         ];
-        let image = render_heat_image(area, unit, &sources);
+        let stops = palette_stops(KeyHeatmapPalette::Ironbow, true, Color32::RED);
+        let image = render_heat_image(area, unit, &sources, &stops);
         let pixel = |x: f32| {
             image.pixels
                 [(10.0 / HEAT_PIXEL_SIZE) as usize * image.width() + (x / HEAT_PIXEL_SIZE) as usize]

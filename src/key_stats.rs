@@ -30,6 +30,31 @@ fn default_true() -> bool {
     true
 }
 
+/// Color scheme of the key heatmap and its activity calendar.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub(crate) enum KeyHeatmapPalette {
+    /// Neutral to the app accent color.
+    #[default]
+    Accent,
+    Amber,
+    Glacier,
+    Graphite,
+    /// Thermal camera colors.
+    Ironbow,
+}
+
+impl KeyHeatmapPalette {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Accent,
+        Self::Amber,
+        Self::Glacier,
+        Self::Graphite,
+        Self::Ironbow,
+    ];
+}
+
 /// User settings of the key heatmap, stored in `AppSettings`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct KeyHeatmapSettings {
@@ -45,6 +70,8 @@ pub(crate) struct KeyHeatmapSettings {
     pub(crate) log_scale: bool,
     #[serde(default)]
     pub(crate) show_held_keys_in_routes: bool,
+    #[serde(default)]
+    pub(crate) palette: KeyHeatmapPalette,
 }
 
 impl Default for KeyHeatmapSettings {
@@ -55,6 +82,7 @@ impl Default for KeyHeatmapSettings {
             top_transitions: default_top_transitions(),
             log_scale: true,
             show_held_keys_in_routes: false,
+            palette: KeyHeatmapPalette::default(),
         }
     }
 }
